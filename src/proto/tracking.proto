@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package tracking;
+
+service TrackingService {
+  // Rider sends location updates (Client Streaming for high frequency)
+  rpc UpdateLocation(stream LocationUpdate) returns (UpdateResponse);
+
+  // Customer tracks a specific rider (Server Streaming for real-time push)
+  rpc TrackRider(TrackRequest) returns (stream LocationUpdate);
+
+  // NEW: Log rider cancellation
+  rpc LogCancellation(CancellationRequest) returns (UpdateResponse);
+}
+
+message LocationUpdate {
+  string rider_id = 1;
+  double latitude = 2;
+  double longitude = 3;
+  int64 timestamp = 4;
+}
+
+message UpdateResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message TrackRequest {
+  string rider_id = 1;
+}
+
+message CancellationRequest {
+  string rider_id = 1;
+  string order_id = 2;
+  int32 reason_code = 3;
+  string reason_detail = 4;
+  double order_value = 5;
+  double pickup_lat = 6;
+  double pickup_lon = 7;
+  double rider_lat = 8;
+  double rider_lon = 9;
+  int32 time_to_cancellation_minutes = 10;
+  double distance_to_pickup_km = 11;
+  bool is_rush_hour = 12;
+}
