@@ -29,6 +29,8 @@ export interface GrpcDependencies {
 export function startGrpcServer(deps: GrpcDependencies) {
   const { pool, redis, redisPub, redisSub, producer } = deps;
 
+  let activeSubscriptions = 0;
+
   const trackingServerHandlers = {
     // 1. Rider Updates Location (Client Streaming)
     UpdateLocation: (call: any, callback: any) => {
@@ -60,6 +62,8 @@ export function startGrpcServer(deps: GrpcDependencies) {
       const channel = `rider:location:${rider_id}`;
 
       console.log(`Customer started tracking rider: ${rider_id}`);
+      activeSubscriptions++;
+      console.log(`[RedisSub] Subscribed to ${channel}. Active: ${activeSubscriptions}`);
 
       const messageHandler = (chan: string, message: string) => {
         if (chan === channel) {
@@ -74,6 +78,8 @@ export function startGrpcServer(deps: GrpcDependencies) {
       call.on('cancelled', () => {
         redisSub.unsubscribe(channel);
         redisSub.removeListener('message', messageHandler);
+        activeSubscriptions--;
+        console.log(`[RedisSub] Unsubscribed from ${channel}. Active: ${activeSubscriptions}`);
         console.log(`Customer stopped tracking rider: ${rider_id}`);
       });
     },
