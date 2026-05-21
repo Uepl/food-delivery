@@ -35,12 +35,15 @@ function sortRiders(riders: Rider[]): Rider[] {
   return [...riders].sort((a, b) => {
     const distA = a.distanceToRestaurant ?? 0;
     const distB = b.distanceToRestaurant ?? 0;
-    const distanceDiff = distA - distB;
 
-    if (Math.abs(distanceDiff) <= TIE_BREAKER_THRESHOLD) {
-      return b.rating - a.rating;
+    const binA = Math.floor(distA / TIE_BREAKER_THRESHOLD);
+    const binB = Math.floor(distB / TIE_BREAKER_THRESHOLD);
+
+    if (binA !== binB) {
+      return binA - binB;
     }
-    return distanceDiff;
+
+    return b.rating - a.rating;
   });
 }
 
