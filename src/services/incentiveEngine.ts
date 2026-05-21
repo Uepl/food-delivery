@@ -21,22 +21,32 @@ export async function startIncentiveEngine() {
       const location = JSON.parse(message.value.toString());
       
       // LOGIC: Simple density calculation
-      // 1. Identify grid area for location.lat/lon
-      // 2. Increment active rider count in Redis (using HINCRBY)
-      // 3. If count > threshold, update bonus rate
-      
-      const gridKey = `grid:${Math.floor(location.latitude)}:${Math.floor(location.longitude)}`;
-      await redis.hincrby('active_riders', gridKey, 1);
-      
-      // Set expiry to simulate active window
-      await redis.expire('active_riders', 60); 
+      // 1. Identify grid area for location.lat/lon (Higher resolution: approx 110m)
+      const gridKey = `grid:${Math.floor(location.latitude * 1000)}:${Math.floor(location.longitude * 1000)}`;
+      const now = Date.now();
+      const zsetKey = `active_riders:${gridKey}`;
+      const bonusKey = `bonus:${gridKey}`;
 
-      // Update bonus if threshold met (e.g., > 10 riders in this grid)
-      const riderCount = await redis.hget('active_riders', gridKey);
-      if (Number(riderCount) > 10) {
-        await redis.set(`bonus:${gridKey}`, '1.5'); // Bonus multiplier 1.5
+      // Use pipeline for atomic operations
+      const pipeline = redis.pipeline();
+      
+      pipeline.zadd(zsetKey, now, location.riderId);
+      pipeline.zremrangebyscore(zsetKey, '-inf', now - 60000); // Clean up riders older than 1 minute
+      pipeline.zcard(zsetKey);
+      pipeline.expire(zsetKey, 300); // Ensure the ZSET key eventually expires if inactive
+      
+      const results = await pipeline.exec();
+      
+      // Results format: [[null, zadd_result], [null, zrem_result], [null, zcard_result], [null, expire_result]]
+      if (!results) throw new Error('Pipeline execution failed');
+      
+      const riderCount = results[2][1] as number;
+      
+      // Update bonus based on count
+      if (riderCount > 10) {
+        await redis.set(bonusKey, '1.5', 'EX', 60); // Set bonus with short expiry
       } else {
-        await redis.set(`bonus:${gridKey}`, '1.0'); // Standard
+        await redis.set(bonusKey, '1.0', 'EX', 60); // Set standard with short expiry
       }
     },
   });
