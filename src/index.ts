@@ -1,5 +1,7 @@
 import express from 'express';
 import { Pool } from 'pg';
+import Redis from 'ioredis';
+import { Kafka } from 'kafkajs';
 import { startGrpcServer } from './grpc/server';
 import { startIncentiveEngine } from './services/incentiveEngine';
 
@@ -14,6 +16,24 @@ const pool = new Pool({
   port: 5432,
 });
 
+async function start() {
+  const redis = new Redis({ host: process.env.REDIS_HOST || 'localhost' });
+  const redisPub = new Redis({ host: process.env.REDIS_HOST || 'localhost' });
+  const redisSub = new Redis({ host: process.env.REDIS_HOST || 'localhost' });
+
+  const kafka = new Kafka({
+    clientId: 'tracking-service',
+    brokers: [process.env.KAFKA_BROKER || 'localhost:29092'],
+  });
+  const producer = kafka.producer();
+  await producer.connect();
+
+  // Start gRPC Tracking Server
+  startGrpcServer({ pool, redis, redisPub, redisSub, producer });
+}
+
+start().catch(console.error);
+
 app.get('/', async (req, res) => {
   try {
     const result = await pool.query('SELECT NOW()');
@@ -23,9 +43,6 @@ app.get('/', async (req, res) => {
     res.status(500).send('Database connection error');
   }
 });
-
-// Start gRPC Tracking Server
-startGrpcServer(pool);
 
 // Start Incentive Engine
 startIncentiveEngine().catch(console.error);
