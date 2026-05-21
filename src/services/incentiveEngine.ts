@@ -1,6 +1,11 @@
 import { Kafka, Consumer } from 'kafkajs';
 import Redis from 'ioredis';
+import pino from 'pino';
 import { CLEANUP_WINDOW_MS, ZSET_EXPIRY_SECONDS, BONUS_EXPIRY_SECONDS, RIDER_THRESHOLD } from '../models/constants';
+
+const logger = pino();
+
+const LUA_KEY_COUNT = 2;
 
 const INCENTIVE_LUA_SCRIPT = `
 local zsetKey = KEYS[1]
@@ -29,79 +34,94 @@ end
 return riderCount
 `;
 
-export async function startIncentiveEngine(kafka: Kafka, redis: Redis) {
-  // Load script once and store SHA
-  let scriptSha: string = await (redis.script as any)('load', INCENTIVE_LUA_SCRIPT);
-
-  const consumer = kafka.consumer({ groupId: 'incentive-group' });
-  await consumer.connect();
-  // Subscribe to location updates
-  await consumer.subscribe({ topic: 'rider-location-updates', fromBeginning: false });
-
-  console.log('Incentive Engine started...');
-
-  await consumer.run({
-    eachMessage: async ({ message, topic, partition }) => {
-      try {
-        if (!message.value) return;
-        const location = JSON.parse(message.value.toString());
-        
-        if (location.latitude === undefined || location.longitude === undefined || location.rider_id === undefined) {
-          console.error('Invalid location data:', location);
-          return;
-        }
-
-        // LOGIC: Simple density calculation
-        // 1. Identify grid area for location.lat/lon (Higher resolution: approx 110m)
-        const gridKey = `grid:${Math.floor(location.latitude * 1000)}:${Math.floor(location.longitude * 1000)}`;
-        const now = Date.now();
-        // Use hash tags to ensure keys are in the same slot
-        const zsetKey = `{${gridKey}}:active_riders`;
-        const bonusKey = `{${gridKey}}:bonus`;
-
-        // Atomic operation using Lua script
-        try {
-            await redis.evalsha(
-                scriptSha,
-                2, 
-                zsetKey, 
-                bonusKey, 
-                now, 
-                location.rider_id, 
-                CLEANUP_WINDOW_MS, 
-                ZSET_EXPIRY_SECONDS, 
-                BONUS_EXPIRY_SECONDS, 
-                RIDER_THRESHOLD
-            );
-        } catch (error: any) {
-            if (error.message.includes('NOSCRIPT')) {
-                // NOSCRIPT: Script not loaded, reload and retry
-                scriptSha = await (redis.script as any)('load', INCENTIVE_LUA_SCRIPT);
-                await redis.evalsha(
-                    scriptSha,
-                    2,
-                    zsetKey,
-                    bonusKey,
-                    now,
-                    location.rider_id,
-                    CLEANUP_WINDOW_MS,
-                    ZSET_EXPIRY_SECONDS,
-                    BONUS_EXPIRY_SECONDS,
-                    RIDER_THRESHOLD
-                );
-            } else {
-                throw error;
-            }
-        }
-      } catch (error) {
-        console.error(`Error processing message from topic ${topic} partition ${partition}:`, error);
-        // Do not throw, allowing the consumer to continue
-      }
-    },
-  });
-  return consumer;
+function getIncentiveKeys(latitude: number, longitude: number) {
+    const gridKey = `grid:${Math.floor(latitude * 1000)}:${Math.floor(longitude * 1000)}`;
+    return {
+        zsetKey: `{${gridKey}}:active_riders`,
+        bonusKey: `{${gridKey}}:bonus`
+    };
 }
 
+/**
+ * Starts the incentive engine consumer.
+ * @param kafka - The Kafka instance.
+ * @param redis - The Redis instance.
+ * @returns The Kafka consumer instance.
+ * NOTE: The caller is responsible for invoking stopIncentiveEngine to clean up resources.
+ */
+export async function startIncentiveEngine(kafka: Kafka, redis: Redis) {
+    // Validate constants
+    if ([CLEANUP_WINDOW_MS, ZSET_EXPIRY_SECONDS, BONUS_EXPIRY_SECONDS, RIDER_THRESHOLD].some(c => typeof c !== 'number')) {
+        throw new Error('Invalid incentive engine constants');
+    }
+
+    // Load script once and store SHA
+    const redisScript = redis.script as unknown as (command: 'load', script: string) => Promise<string>;
+    let scriptSha: string = await redisScript('load', INCENTIVE_LUA_SCRIPT);
+
+    const consumer = kafka.consumer({ groupId: 'incentive-group' });
+    await consumer.connect();
+    // Subscribe to location updates
+    await consumer.subscribe({ topic: 'rider-location-updates', fromBeginning: false });
+
+    logger.info('Incentive Engine started...');
+
+    await consumer.run({
+        eachMessage: async ({ message, topic, partition }) => {
+            if (!message.value) return;
+            
+            let location;
+            try {
+                location = JSON.parse(message.value.toString());
+                if (location.latitude === undefined || location.longitude === undefined || location.rider_id === undefined) {
+                    throw new Error('Invalid location data');
+                }
+            } catch (error) {
+                logger.error({ error, topic, partition }, 'Failed to parse or validate location data');
+                return;
+            }
+
+            const { zsetKey, bonusKey } = getIncentiveKeys(location.latitude, location.longitude);
+            const now = Date.now();
+
+            // Atomic operation using Lua script
+            const executeScript = async (retry: boolean = true) => {
+                try {
+                    return await redis.evalsha(
+                        scriptSha,
+                        LUA_KEY_COUNT,
+                        zsetKey,
+                        bonusKey,
+                        now,
+                        location.rider_id,
+                        CLEANUP_WINDOW_MS,
+                        ZSET_EXPIRY_SECONDS,
+                        BONUS_EXPIRY_SECONDS,
+                        RIDER_THRESHOLD
+                    );
+                } catch (error: any) {
+                    if (retry && error.message.includes('NOSCRIPT')) {
+                        scriptSha = await redisScript('load', INCENTIVE_LUA_SCRIPT);
+                        return executeScript(false);
+                    }
+                    throw error;
+                }
+            };
+
+            try {
+                await executeScript();
+            } catch (error) {
+                logger.error({ error, topic, partition }, 'Error processing message');
+            }
+        },
+    });
+    return consumer;
+}
+
+/**
+ * Stops the incentive engine consumer.
+ * @param consumer - The Kafka consumer instance to stop.
+ */
 export async function stopIncentiveEngine(consumer: Consumer) {
-  await consumer.disconnect();
+    await consumer.disconnect();
 }
