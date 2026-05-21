@@ -52,17 +52,21 @@ export function startGrpcServer(deps: GrpcDependencies) {
     // 1. Rider Updates Location (Client Streaming)
     UpdateLocation: (call: any, callback: any) => {
       call.on('data', async (location: any) => {
-        const { rider_id, latitude, longitude, timestamp } = location;
-        const payload = JSON.stringify(location);
+        try {
+          const { rider_id, latitude, longitude, timestamp } = location;
+          const payload = JSON.stringify(location);
 
-        // A. Hot Path: Save to Redis GEO for spatial queries
-        await redis.geoadd('riders_location', longitude, latitude, rider_id);
-        
-        // B. Fan-out: Publish to Redis Pub/Sub for active customers
-        await redisPub.publish(`rider:location:${rider_id}`, payload);
+          // A. Hot Path: Save to Redis GEO for spatial queries
+          await redis.geoadd('riders_location', longitude, latitude, rider_id);
+          
+          // B. Fan-out: Publish to Redis Pub/Sub for active customers
+          await redisPub.publish(`rider:location:${rider_id}`, payload);
 
-        // C. Cold Path: Send to Kafka for DB persistence
-        await sendToKafkaWithRetry('rider-location-updates', payload).catch(err => console.error('Kafka send failed after retries:', err));
+          // C. Cold Path: Send to Kafka for DB persistence
+          await sendToKafkaWithRetry('rider-location-updates', payload).catch(err => console.error('Kafka send failed after retries:', err));
+        } catch (error) {
+          console.error('Error processing location update:', error);
+        }
       });
 
       call.on('end', () => {
