@@ -1,7 +1,7 @@
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import Redis from 'ioredis';
-import { Kafka, Producer } from 'kafkajs';
+import { Producer } from 'kafkajs';
 import path from 'path';
 import { Pool } from 'pg';
 
@@ -17,31 +17,18 @@ const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
 
 const trackingProto: any = grpc.loadPackageDefinition(packageDefinition).tracking;
 
-// Infrastructure Clients
-const redisHost = process.env.REDIS_HOST || 'localhost';
-const redis = new Redis({ host: redisHost });
-const redisPub = new Redis({ host: redisHost }); // For publishing
-const redisSub = new Redis({ host: redisHost }); // For subscribing
-
-const kafkaBroker = process.env.KAFKA_BROKER || 'localhost:29092';
-const kafka = new Kafka({
-  clientId: 'tracking-service',
-  brokers: [kafkaBroker],
-});
-const producer: Producer = kafka.producer();
-
-async function initKafka() {
-  try {
-    await producer.connect();
-    console.log('Kafka Producer connected');
-  } catch (err) {
-    console.error('Failed to connect Kafka Producer:', err);
-  }
+// Interface for DI
+export interface GrpcDependencies {
+  pool: Pool;
+  redis: Redis;
+  redisPub: Redis;
+  redisSub: Redis;
+  producer: Producer;
 }
 
-initKafka();
+export function startGrpcServer(deps: GrpcDependencies) {
+  const { pool, redis, redisPub, redisSub, producer } = deps;
 
-export function startGrpcServer(pool: Pool) {
   const trackingServerHandlers = {
     // 1. Rider Updates Location (Client Streaming)
     UpdateLocation: (call: any, callback: any) => {
