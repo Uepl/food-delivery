@@ -1,13 +1,7 @@
-import { Kafka } from 'kafkajs';
+import { Kafka, Consumer } from 'kafkajs';
 import Redis from 'ioredis';
 
-const kafka = new Kafka({ 
-    clientId: 'incentive-engine', 
-    brokers: [process.env.KAFKA_BROKER || 'localhost:29092'] 
-});
-const redis = new Redis({ host: process.env.REDIS_HOST || 'localhost' });
-
-export async function startIncentiveEngine() {
+export async function startIncentiveEngine(kafka: Kafka, redis: Redis) {
   const consumer = kafka.consumer({ groupId: 'incentive-group' });
   await consumer.connect();
   // Subscribe to location updates
@@ -30,7 +24,7 @@ export async function startIncentiveEngine() {
       // Use pipeline for atomic operations
       const pipeline = redis.pipeline();
       
-      pipeline.zadd(zsetKey, now, location.riderId);
+      pipeline.zadd(zsetKey, now, location.rider_id);
       pipeline.zremrangebyscore(zsetKey, '-inf', now - 60000); // Clean up riders older than 1 minute
       pipeline.zcard(zsetKey);
       pipeline.expire(zsetKey, 300); // Ensure the ZSET key eventually expires if inactive
@@ -39,6 +33,11 @@ export async function startIncentiveEngine() {
       
       // Results format: [[null, zadd_result], [null, zrem_result], [null, zcard_result], [null, expire_result]]
       if (!results) throw new Error('Pipeline execution failed');
+
+      // Check for individual command errors
+      for (const [error] of results) {
+        if (error) throw error;
+      }
       
       const riderCount = results[2][1] as number;
       
@@ -50,4 +49,9 @@ export async function startIncentiveEngine() {
       }
     },
   });
+  return consumer;
+}
+
+export async function stopIncentiveEngine(consumer: Consumer) {
+  await consumer.disconnect();
 }

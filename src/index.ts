@@ -3,7 +3,7 @@ import { Pool } from 'pg';
 import Redis from 'ioredis';
 import { Kafka } from 'kafkajs';
 import { startGrpcServer } from './grpc/server';
-import { startIncentiveEngine } from './services/incentiveEngine';
+import { startIncentiveEngine, stopIncentiveEngine } from './services/incentiveEngine';
 
 const app = express();
 const port = 3000;
@@ -30,6 +30,24 @@ async function start() {
 
   // Start gRPC Tracking Server
   startGrpcServer({ pool, redis, redisPub, redisSub, producer });
+
+  // Start Incentive Engine
+  const consumer = await startIncentiveEngine(kafka, redis);
+
+  // Shutdown handler
+  const shutdown = async () => {
+    console.log('Shutting down...');
+    await stopIncentiveEngine(consumer);
+    await producer.disconnect();
+    await redis.quit();
+    await redisPub.quit();
+    await redisSub.quit();
+    await pool.end();
+    process.exit(0);
+  };
+
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }
 
 start().catch(console.error);
@@ -43,9 +61,6 @@ app.get('/', async (req, res) => {
     res.status(500).send('Database connection error');
   }
 });
-
-// Start Incentive Engine
-startIncentiveEngine().catch(console.error);
 
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
