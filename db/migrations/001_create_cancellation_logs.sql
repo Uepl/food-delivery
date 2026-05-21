@@ -18,3 +18,7 @@ CREATE TABLE IF NOT EXISTS cancellation_logs (
     fraud_potential_score DECIMAL(5, 2),
     fraud_detection_flag BOOLEAN DEFAULT FALSE
 );
+
+CREATE INDEX IF NOT EXISTS idx_cancellation_logs_rider ON cancellation_logs(rider_id);
+CREATE INDEX IF NOT EXISTS idx_cancellation_logs_order ON cancellation_logs(order_id);
+CREATE INDEX IF NOT EXISTS idx_cancellation_logs_timestamp ON cancellation_logs(cancellation_timestamp);

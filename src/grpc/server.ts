@@ -4,6 +4,7 @@ import Redis from 'ioredis';
 import { Producer } from 'kafkajs';
 import path from 'path';
 import { Pool } from 'pg';
+import { RedisSubscriptionDispatcher } from './redisDispatcher';
 
 const PROTO_PATH = path.resolve(__dirname, '../proto/tracking.proto');
 
@@ -28,8 +29,24 @@ export interface GrpcDependencies {
 
 export function startGrpcServer(deps: GrpcDependencies) {
   const { pool, redis, redisPub, redisSub, producer } = deps;
-
+  const dispatcher = new RedisSubscriptionDispatcher(redisSub);
   let activeSubscriptions = 0;
+
+  async function sendToKafkaWithRetry(topic: string, message: string, retries = 3) {
+    for (let i = 0; i < retries; i++) {
+      try {
+        await producer.send({
+          topic,
+          messages: [{ value: message }],
+        });
+        return;
+      } catch (err) {
+        console.error(`Kafka send error (attempt ${i + 1}/${retries}):`, err);
+        if (i === retries - 1) throw err;
+        await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1))); // Simple backoff
+      }
+    }
+  }
 
   const trackingServerHandlers = {
     // 1. Rider Updates Location (Client Streaming)
@@ -45,10 +62,7 @@ export function startGrpcServer(deps: GrpcDependencies) {
         await redisPub.publish(`rider:location:${rider_id}`, payload);
 
         // C. Cold Path: Send to Kafka for DB persistence
-        await producer.send({
-          topic: 'rider-location-updates',
-          messages: [{ value: payload }],
-        }).catch(err => console.error('Kafka send error:', err));
+        await sendToKafkaWithRetry('rider-location-updates', payload).catch(err => console.error('Kafka send failed after retries:', err));
       });
 
       call.on('end', () => {
@@ -65,19 +79,15 @@ export function startGrpcServer(deps: GrpcDependencies) {
       activeSubscriptions++;
       console.log(`[RedisSub] Subscribed to ${channel}. Active: ${activeSubscriptions}`);
 
-      const messageHandler = (chan: string, message: string) => {
-        if (chan === channel) {
-          call.write(JSON.parse(message));
-        }
+      const messageHandler = (message: string) => {
+        call.write(JSON.parse(message));
       };
 
-      redisSub.subscribe(channel);
-      redisSub.on('message', messageHandler);
+      dispatcher.subscribe(channel, messageHandler);
 
       // Clean up when customer disconnects
       call.on('cancelled', () => {
-        redisSub.unsubscribe(channel);
-        redisSub.removeListener('message', messageHandler);
+        dispatcher.unsubscribe(channel, messageHandler);
         activeSubscriptions--;
         console.log(`[RedisSub] Unsubscribed from ${channel}. Active: ${activeSubscriptions}`);
         console.log(`Customer stopped tracking rider: ${rider_id}`);
@@ -105,13 +115,36 @@ export function startGrpcServer(deps: GrpcDependencies) {
   const server = new grpc.Server();
   server.addService(trackingProto.TrackingService.service, trackingServerHandlers);
   
+  const setupGracefulShutdown = () => {
+    const shutdown = async () => {
+      console.log('Shutting down gracefully...');
+      try {
+        server.forceShutdown();
+        await producer.disconnect();
+        await redis.quit();
+        await redisPub.quit();
+        await redisSub.quit();
+        await pool.end();
+        console.log('Resources closed successfully.');
+        process.exit(0);
+      } catch (err) {
+        console.error('Error during shutdown:', err);
+        process.exit(1);
+      }
+    };
+
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+  };
+
+  setupGracefulShutdown();
+
   const port = '0.0.0.0:50051';
   server.bindAsync(port, grpc.ServerCredentials.createInsecure(), (err, boundPort) => {
     if (err) {
       console.error('Failed to bind gRPC server:', err);
       return;
     }
-    server.start();
     console.log(`gRPC Tracking Server running at ${port}`);
   });
 }
