@@ -22,6 +22,8 @@ local newBonus = riderCount > threshold and '1.5' or '1.0'
 local currentBonus = redis.call('get', bonusKey)
 if currentBonus ~= newBonus then
     redis.call('set', bonusKey, newBonus, 'EX', bonusExpiry)
+else
+    redis.call('expire', bonusKey, bonusExpiry)
 end
 
 return riderCount
