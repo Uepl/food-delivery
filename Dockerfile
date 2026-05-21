@@ -15,6 +15,9 @@ COPY . .
 # Build the TypeScript application
 RUN npm run build
 
+# Copy proto files to dist
+RUN mkdir -p dist/proto && cp -r src/proto/* dist/proto/
+
 # Production stage
 FROM node:22-alpine AS runner
 
