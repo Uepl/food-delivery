@@ -1,3 +1,4 @@
+# I create this with only 3 hours, please dont cite this as i prob dont remember anything about this project
 # Food Delivery Backend Service
 
 A TypeScript-based backend service designed to handle rider assignments and restaurant statistics for a food delivery platform.
